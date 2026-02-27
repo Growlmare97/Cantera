@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Run common Cantera combustion reactor models and plot results.
+"""Run Cantera combustion reactor models, plot results, and compare experiments.
 
 Features:
 - Loads Cantera YAML mechanism files
-- Simulates several reactor types (batch CV/CP, CSTR, PFR approximation)
+- Simulates multiple reactor types with configurable energy mode:
+  - adiabatic (energy equation on)
+  - isothermal (energy equation off)
 - Plots temperature and species composition trajectories
-- Compares simulation output against experimental data from CSV
+- Compares simulation output against experimental CSV data via RMSE
 """
 
 from __future__ import annotations
@@ -13,12 +15,28 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
-import cantera as ct
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
+
+
+def _get_ct() -> Any:
+    try:
+        import cantera as ct  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "Cantera is required for simulation. Install it with: pip install cantera"
+        ) from exc
+    return ct
+
+
+@dataclass(frozen=True)
+class ReactorSpec:
+    name: str
+    energy: str = "adiabatic"  # adiabatic | isothermal
+
+    @property
+    def energy_flag(self) -> str:
+        return "on" if self.energy == "adiabatic" else "off"
 
 
 @dataclass
@@ -29,7 +47,7 @@ class SimulationConfig:
     phi: float
     temperature: float
     pressure: float
-    reactor_types: tuple[str, ...]
+    reactors: tuple[ReactorSpec, ...]
     end_time: float
     points: int
     species: tuple[str, ...]
@@ -43,20 +61,46 @@ class SimulationConfig:
 
 @dataclass
 class ReactorResult:
-    reactor_type: str
-    frame: pd.DataFrame
+    reactor_label: str
+    frame: Any
 
 
-def build_gas(config: SimulationConfig) -> ct.Solution:
+def parse_reactor_specs(values: Iterable[str], default_energy: str) -> tuple[ReactorSpec, ...]:
+    specs: list[ReactorSpec] = []
+    valid_names = {"const_volume", "const_pressure", "cstr", "pfr_chain"}
+    valid_energy = {"adiabatic", "isothermal"}
+
+    for value in values:
+        if ":" in value:
+            name, energy = value.split(":", 1)
+        else:
+            name, energy = value, default_energy
+
+        if name not in valid_names:
+            raise ValueError(f"Unknown reactor type '{name}'")
+        if energy not in valid_energy:
+            raise ValueError(
+                f"Unknown energy mode '{energy}' for reactor '{name}'. Use adiabatic or isothermal."
+            )
+        specs.append(ReactorSpec(name=name, energy=energy))
+
+    return tuple(specs)
+
+
+def build_gas(config: SimulationConfig) -> Any:
+    ct = _get_ct()
     gas = ct.Solution(config.mechanism)
     gas.set_equivalence_ratio(config.phi, fuel=config.fuel, oxidizer=config.oxidizer)
     gas.TP = config.temperature, config.pressure
     return gas
 
 
-def run_const_volume_batch(config: SimulationConfig) -> ReactorResult:
+def run_const_volume_batch(config: SimulationConfig, spec: ReactorSpec) -> ReactorResult:
+    import numpy as np
+    import pandas as pd
+    ct = _get_ct()
     gas = build_gas(config)
-    reactor = ct.IdealGasReactor(gas, energy="on")
+    reactor = ct.IdealGasReactor(gas, energy=spec.energy_flag)
     network = ct.ReactorNet([reactor])
 
     times = np.linspace(0.0, config.end_time, config.points)
@@ -65,12 +109,15 @@ def run_const_volume_batch(config: SimulationConfig) -> ReactorResult:
         network.advance(time_s)
         rows.append(extract_state(time_s, reactor.thermo, config.species))
 
-    return ReactorResult("const_volume", pd.DataFrame(rows))
+    return ReactorResult(f"const_volume_{spec.energy}", pd.DataFrame(rows))
 
 
-def run_const_pressure_batch(config: SimulationConfig) -> ReactorResult:
+def run_const_pressure_batch(config: SimulationConfig, spec: ReactorSpec) -> ReactorResult:
+    import numpy as np
+    import pandas as pd
+    ct = _get_ct()
     gas = build_gas(config)
-    reactor = ct.IdealGasConstPressureReactor(gas, energy="on")
+    reactor = ct.IdealGasConstPressureReactor(gas, energy=spec.energy_flag)
     network = ct.ReactorNet([reactor])
 
     times = np.linspace(0.0, config.end_time, config.points)
@@ -79,20 +126,27 @@ def run_const_pressure_batch(config: SimulationConfig) -> ReactorResult:
         network.advance(time_s)
         rows.append(extract_state(time_s, reactor.thermo, config.species))
 
-    return ReactorResult("const_pressure", pd.DataFrame(rows))
+    return ReactorResult(f"const_pressure_{spec.energy}", pd.DataFrame(rows))
 
 
-def run_cstr(config: SimulationConfig) -> ReactorResult:
+def run_cstr(config: SimulationConfig, spec: ReactorSpec) -> ReactorResult:
+    import numpy as np
+    import pandas as pd
+    ct = _get_ct()
     feed = build_gas(config)
     reactor_gas = build_gas(config)
 
     tank = ct.Reservoir(feed)
     env = ct.Reservoir(reactor_gas)
-    reactor = ct.IdealGasReactor(reactor_gas, volume=config.cstr_volume, energy="on")
+    reactor = ct.IdealGasReactor(
+        reactor_gas,
+        volume=config.cstr_volume,
+        energy=spec.energy_flag,
+    )
 
-    mdot = reactor.mass / config.cstr_residence_time
-    ct.MassFlowController(tank, reactor, mdot=mdot)
-    ct.PressureController(reactor, env, primary=None, K=1e-5)
+    mdot = reactor.mass / max(config.cstr_residence_time, 1e-12)
+    inlet = ct.MassFlowController(tank, reactor, mdot=mdot)
+    ct.PressureController(reactor, env, primary=inlet, K=1e-5)
     network = ct.ReactorNet([reactor])
 
     times = np.linspace(0.0, config.end_time, config.points)
@@ -101,39 +155,42 @@ def run_cstr(config: SimulationConfig) -> ReactorResult:
         network.advance(time_s)
         rows.append(extract_state(time_s, reactor.thermo, config.species))
 
-    return ReactorResult("cstr", pd.DataFrame(rows))
+    return ReactorResult(f"cstr_{spec.energy}", pd.DataFrame(rows))
 
 
-def run_pfr_chain(config: SimulationConfig) -> ReactorResult:
+def run_pfr_chain(config: SimulationConfig, spec: ReactorSpec) -> ReactorResult:
+    import pandas as pd
+    ct = _get_ct()
     base = build_gas(config)
 
-    dz = config.pfr_length / config.pfr_segments
+    dz = config.pfr_length / max(config.pfr_segments, 1)
     segment_time = dz / max(config.pfr_velocity, 1e-12)
 
     rows = []
     cumulative_time = 0.0
     for segment in range(config.pfr_segments + 1):
-        rows.append(extract_state(cumulative_time, base, config.species) | {"distance_m": segment * dz})
-
-        reactor = ct.IdealGasReactor(base, energy="on")
+        rows.append(
+            extract_state(cumulative_time, base, config.species) | {"distance_m": segment * dz}
+        )
+        reactor = ct.IdealGasReactor(base, energy=spec.energy_flag)
         network = ct.ReactorNet([reactor])
         network.advance(segment_time)
         base = reactor.thermo
         cumulative_time += segment_time
 
-    return ReactorResult("pfr_chain", pd.DataFrame(rows))
+    return ReactorResult(f"pfr_chain_{spec.energy}", pd.DataFrame(rows))
 
 
-def extract_state(time_s: float, gas: ct.Solution, species: Iterable[str]) -> dict[str, float]:
+def extract_state(time_s: float, gas: Any, species: Iterable[str]) -> dict[str, float]:
     state = {
-        "time_s": time_s,
-        "temperature_K": gas.T,
-        "pressure_Pa": gas.P,
+        "time_s": float(time_s),
+        "temperature_K": float(gas.T),
+        "pressure_Pa": float(gas.P),
     }
     for name in species:
         if name not in gas.species_names:
             raise ValueError(f"Requested species '{name}' is not present in the mechanism")
-        state[f"X_{name}"] = gas[name].X[0]
+        state[f"X_{name}"] = float(gas[name].X[0])
     return state
 
 
@@ -146,14 +203,13 @@ def run_requested_reactors(config: SimulationConfig) -> list[ReactorResult]:
     }
 
     results = []
-    for reactor_type in config.reactor_types:
-        if reactor_type not in runners:
-            raise ValueError(f"Unknown reactor type '{reactor_type}'")
-        results.append(runners[reactor_type](config))
+    for spec in config.reactors:
+        results.append(runners[spec.name](config, spec))
     return results
 
 
 def plot_results(results: list[ReactorResult], output_dir: Path) -> None:
+    import matplotlib.pyplot as plt
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fig_t, ax_t = plt.subplots(figsize=(10, 6))
@@ -164,17 +220,17 @@ def plot_results(results: list[ReactorResult], output_dir: Path) -> None:
         x_axis = frame["distance_m"] if "distance_m" in frame else frame["time_s"]
         x_label = "Distance (m)" if "distance_m" in frame else "Time (s)"
 
-        ax_t.plot(x_axis, frame["temperature_K"], label=result.reactor_type)
+        ax_t.plot(x_axis, frame["temperature_K"], label=result.reactor_label)
 
         for col in [c for c in frame.columns if c.startswith("X_")]:
-            ax_x.plot(x_axis, frame[col], label=f"{result.reactor_type}:{col}")
+            ax_x.plot(x_axis, frame[col], label=f"{result.reactor_label}:{col}")
 
-        result.frame.to_csv(output_dir / f"{result.reactor_type}_results.csv", index=False)
+        result.frame.to_csv(output_dir / f"{result.reactor_label}_results.csv", index=False)
 
     ax_t.set_xlabel(x_label)
     ax_t.set_ylabel("Temperature (K)")
     ax_t.set_title("Temperature profile")
-    ax_t.legend()
+    ax_t.legend(fontsize=8)
     ax_t.grid(True, alpha=0.3)
     fig_t.tight_layout()
     fig_t.savefig(output_dir / "temperature_profiles.png", dpi=150)
@@ -196,7 +252,10 @@ def compare_experiment(
     experiment_csv: Path,
     output_dir: Path,
     x_column: str,
-) -> pd.DataFrame:
+) -> Any:
+    import numpy as np
+    import pandas as pd
+    output_dir.mkdir(parents=True, exist_ok=True)
     exp = pd.read_csv(experiment_csv)
     if x_column not in exp.columns:
         raise ValueError(f"Experimental file must contain x-column '{x_column}'")
@@ -222,9 +281,9 @@ def compare_experiment(
             rmse = np.sqrt(np.mean((exp[col].values - sim_interp_df[col].values) ** 2))
             rows.append(
                 {
-                    "reactor_type": result.reactor_type,
+                    "reactor": result.reactor_label,
                     "observable": col,
-                    "rmse": rmse,
+                    "rmse": float(rmse),
                 }
             )
 
@@ -240,13 +299,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--oxidizer", default="O2:1.0, N2:3.76", help="Oxidizer composition")
     parser.add_argument("--phi", type=float, default=1.0, help="Equivalence ratio")
     parser.add_argument("--temperature", type=float, default=1000.0, help="Initial temperature (K)")
-    parser.add_argument("--pressure", type=float, default=ct.one_atm, help="Initial pressure (Pa)")
+    parser.add_argument("--pressure", type=float, default=101325.0, help="Initial pressure (Pa)")
     parser.add_argument(
         "--reactors",
         nargs="+",
         default=["const_volume", "const_pressure", "cstr", "pfr_chain"],
-        choices=["const_volume", "const_pressure", "cstr", "pfr_chain"],
-        help="Reactor models to run",
+        help="Reactor list. Use reactor or reactor:energy (adiabatic/isothermal)",
+    )
+    parser.add_argument(
+        "--default-energy",
+        choices=["adiabatic", "isothermal"],
+        default="adiabatic",
+        help="Default energy mode for reactors not explicitly specifying :energy",
     )
     parser.add_argument("--end-time", type=float, default=0.02, help="Final simulation time (s)")
     parser.add_argument("--points", type=int, default=300, help="Number of output points")
@@ -266,7 +330,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--experiment-x-column",
         default="time_s",
-        help="x-axis column in experimental data (e.g., time_s or distance_m)",
+        help="x-axis column in experimental data (for example: time_s or distance_m)",
     )
     return parser.parse_args()
 
@@ -280,7 +344,7 @@ def main() -> None:
         phi=args.phi,
         temperature=args.temperature,
         pressure=args.pressure,
-        reactor_types=tuple(args.reactors),
+        reactors=parse_reactor_specs(args.reactors, args.default_energy),
         end_time=args.end_time,
         points=args.points,
         species=tuple(args.species),
@@ -306,7 +370,7 @@ def main() -> None:
             print("No overlapping columns between simulation and experimental data.")
         else:
             print("Mechanism fit metrics (RMSE):")
-            print(metrics.sort_values(["observable", "reactor_type"]).to_string(index=False))
+            print(metrics.sort_values(["observable", "reactor"]).to_string(index=False))
 
     print(f"Results stored in {config.output_dir}")
 

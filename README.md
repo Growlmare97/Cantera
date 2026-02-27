@@ -1,28 +1,22 @@
 # Cantera Reactor Suite
 
-A command-line tool to load **Cantera YAML** reaction mechanisms and run common combustion reactor models:
+A toolkit for combustion studies with Cantera YAML mechanisms:
 
-- Constant-volume batch reactor
-- Constant-pressure batch reactor
-- CSTR (well-stirred reactor)
-- PFR (approximated as a chain of stirred reactors)
+- **Python CLI** for reactor simulation (batch CV/CP, CSTR, PFR-chain)
+- **Reactor energy mode control** (`adiabatic` or `isothermal`) per reactor
+- **Plots and CSV outputs** for temperature/composition
+- **Experimental fit workflow** with RMSE metrics
+- **Netlify-ready web UI** for easier configuration and local data plotting
 
-It also plots:
+## 1) Python CLI
 
-- Temperature profiles
-- Species mole-fraction profiles
-
-And it can compare simulation results against experimental data using RMSE.
-
-## Requirements
-
-Install Python dependencies:
+### Install
 
 ```bash
 pip install cantera matplotlib numpy pandas
 ```
 
-## Usage
+### Usage
 
 ```bash
 python cantera_reactor_suite.py gri30.yaml \
@@ -31,25 +25,33 @@ python cantera_reactor_suite.py gri30.yaml \
   --phi 1.0 \
   --temperature 1000 \
   --pressure 101325 \
-  --reactors const_volume const_pressure cstr pfr_chain \
+  --reactors const_volume:adiabatic const_pressure:adiabatic cstr:isothermal pfr_chain:adiabatic \
   --species CH4 O2 CO2 H2O CO OH \
   --output-dir outputs
 ```
 
-### Add experimental data fitting
+### Reactor energy property (new)
 
-Prepare a CSV containing an x-axis column (`time_s` or `distance_m`) and any overlapping result columns (for example `temperature_K`, `X_CO2`, `X_CO`).
+You can now specify energy behavior per reactor:
 
-Example:
+- `adiabatic` → solves energy equation (`energy=on`)
+- `isothermal` → keeps temperature fixed (`energy=off`)
 
-```csv
-time_s,temperature_K,X_CO2
-0.000,1000,0.00
-0.005,1200,0.02
-0.010,1550,0.06
+Examples:
+
+```bash
+--reactors const_volume:isothermal cstr:adiabatic
 ```
 
-Run with fitting enabled:
+Or use a default:
+
+```bash
+--default-energy isothermal --reactors const_volume const_pressure cstr
+```
+
+### Experimental fitting
+
+Use a CSV with an x-axis (`time_s` or `distance_m`) and overlapping observables (`temperature_K`, `X_CO2`, ...):
 
 ```bash
 python cantera_reactor_suite.py gri30.yaml \
@@ -57,15 +59,34 @@ python cantera_reactor_suite.py gri30.yaml \
   --experiment-x-column time_s
 ```
 
-The script writes:
+Outputs:
 
 - Per-reactor CSV result files
 - `temperature_profiles.png`
 - `species_profiles.png`
-- `experiment_fit_metrics.csv` (if experimental data is supplied)
+- `experiment_fit_metrics.csv` (if experiment provided)
 
-## Notes
+## 2) Web UI (Netlify-ready)
 
-- The PFR model is a practical approximation via a reactor chain.
-- Choose species that exist in your mechanism file.
-- For high-temperature ignition problems, refine `--points` and `--end-time` for better resolution.
+A polished static UI is included in `web/`:
+
+- Build CLI command from form inputs
+- Configure reactor/energy combinations visually
+- Upload result CSV files and plot any columns instantly
+
+### Local preview
+
+```bash
+python -m http.server 8080 -d web
+```
+
+Then open `http://localhost:8080`.
+
+### Deploy on Netlify
+
+This repo includes `netlify.toml` with:
+
+- publish directory: `web`
+- `/api/*` redirect to `/.netlify/functions/simulate`
+
+The sample Netlify function currently returns `501` and serves as a backend hook point. You can connect it to an external Python API if you want cloud simulation execution while keeping Netlify for the frontend hosting.
