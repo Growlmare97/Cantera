@@ -10,13 +10,14 @@
 <body>
   <header>
     <h1>🔥 Cantera Reactor Studio</h1>
-    <p>Configure reactor cases (including adiabatic/isothermal), visualize results, and compare experiments.</p>
+    <p>Run Cantera simulations from the browser using a backend API, then visualize outputs.</p>
   </header>
 
   <main>
     <section class="card">
       <h2>Simulation Setup</h2>
       <div class="grid">
+        <label>Backend API URL <input id="apiBase" value="http://localhost:9000" /></label>
         <label>Mechanism YAML <input id="mechanism" value="gri30.yaml" /></label>
         <label>Fuel <input id="fuel" value="CH4:1.0" /></label>
         <label>Oxidizer <input id="oxidizer" value="O2:1.0, N2:3.76" /></label>
@@ -27,32 +28,33 @@
       </div>
 
       <h3>Reactor/Energy selections</h3>
-      <p class="hint">Use per-reactor energy mode via <code>reactor:energy</code>, e.g. <code>cstr:isothermal</code>.</p>
+      <p class="hint">Use <code>reactor:energy</code>, e.g. <code>cstr:isothermal</code>.</p>
       <input id="reactors" value="const_volume:adiabatic const_pressure:adiabatic cstr:isothermal pfr_chain:adiabatic" />
 
       <div class="buttons">
+        <button id="runSim">Run simulation</button>
         <button id="buildCmd">Build CLI Command</button>
       </div>
       <pre id="commandOut"></pre>
+      <pre id="statusOut">Status: idle</pre>
     </section>
 
     <section class="card">
-      <h2>Quick Plot from CSV</h2>
-      <p>Upload a reactor result CSV and plot any columns instantly.</p>
-      <input type="file" id="csvFile" accept=".csv" />
+      <h2>Simulation Results</h2>
       <div class="grid">
+        <label>Reactor <select id="reactorSelect"></select></label>
         <label>X column <select id="xCol"></select></label>
         <label>Y column <select id="yCol"></select></label>
       </div>
       <div class="buttons">
-        <button id="plotBtn">Plot</button>
+        <button id="plotBtn">Plot selected reactor</button>
       </div>
       <div id="plot"></div>
     </section>
   </main>
 
   <footer>
-    <p>Deploy this UI on Netlify as a static site. Run simulations via CLI or wire a backend API.</p>
+    <p>Netlify can host this frontend. Point API URL to your running backend service.</p>
   </footer>
 
   <script src="app.js"></script>

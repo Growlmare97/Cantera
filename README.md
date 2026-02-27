@@ -6,17 +6,50 @@ A toolkit for combustion studies with Cantera YAML mechanisms:
 - **Reactor energy mode control** (`adiabatic` or `isothermal`) per reactor
 - **Plots and CSV outputs** for temperature/composition
 - **Experimental fit workflow** with RMSE metrics
-- **Netlify-ready web UI** for easier configuration and local data plotting
+- **Web UI that can now run simulations** via backend API
+- **Netlify-ready frontend** with function proxy support
 
-## 1) Python CLI
+## 1) Run it locally (step-by-step)
 
-### Install
+## Step 1 — Install dependencies
 
 ```bash
-pip install cantera matplotlib numpy pandas
+pip install cantera matplotlib numpy pandas fastapi uvicorn
 ```
 
-### Usage
+## Step 2 — Start the backend API (this executes Cantera)
+
+```bash
+uvicorn backend_api:app --host 0.0.0.0 --port 9000
+```
+
+Health check:
+
+```bash
+curl http://localhost:9000/health
+```
+
+## Step 3 — Start the web UI
+
+```bash
+python -m http.server 8080 -d web
+```
+
+Open `http://localhost:8080`.
+
+## Step 4 — Run simulation from the UI
+
+1. Set **Backend API URL** to `http://localhost:9000`.
+2. Fill mechanism/fuel/oxidizer/species/reactors.
+3. Click **Run simulation**.
+4. Choose reactor + x/y columns.
+5. Click **Plot selected reactor**.
+
+The UI now calls `POST /simulate` on the backend and loads results in-browser.
+
+---
+
+## 2) Python CLI usage (direct run)
 
 ```bash
 python cantera_reactor_suite.py gri30.yaml \
@@ -30,9 +63,7 @@ python cantera_reactor_suite.py gri30.yaml \
   --output-dir outputs
 ```
 
-### Reactor energy property (new)
-
-You can now specify energy behavior per reactor:
+### Reactor energy property
 
 - `adiabatic` → solves energy equation (`energy=on`)
 - `isothermal` → keeps temperature fixed (`energy=off`)
@@ -43,15 +74,13 @@ Examples:
 --reactors const_volume:isothermal cstr:adiabatic
 ```
 
-Or use a default:
+or
 
 ```bash
 --default-energy isothermal --reactors const_volume const_pressure cstr
 ```
 
 ### Experimental fitting
-
-Use a CSV with an x-axis (`time_s` or `distance_m`) and overlapping observables (`temperature_K`, `X_CO2`, ...):
 
 ```bash
 python cantera_reactor_suite.py gri30.yaml \
@@ -66,27 +95,14 @@ Outputs:
 - `species_profiles.png`
 - `experiment_fit_metrics.csv` (if experiment provided)
 
-## 2) Web UI (Netlify-ready)
+---
 
-A polished static UI is included in `web/`:
+## 3) Netlify deployment
 
-- Build CLI command from form inputs
-- Configure reactor/energy combinations visually
-- Upload result CSV files and plot any columns instantly
+`netlify.toml` publishes `web/` and routes `/api/*` to Netlify function `simulate`.
 
-### Local preview
+The Netlify function now proxies requests to your Python backend URL set in env var:
 
-```bash
-python -m http.server 8080 -d web
-```
+- `SIM_BACKEND_URL=https://your-backend.example.com`
 
-Then open `http://localhost:8080`.
-
-### Deploy on Netlify
-
-This repo includes `netlify.toml` with:
-
-- publish directory: `web`
-- `/api/*` redirect to `/.netlify/functions/simulate`
-
-The sample Netlify function currently returns `501` and serves as a backend hook point. You can connect it to an external Python API if you want cloud simulation execution while keeping Netlify for the frontend hosting.
+So Netlify hosts frontend + proxy, while Cantera execution runs in your Python backend environment.
